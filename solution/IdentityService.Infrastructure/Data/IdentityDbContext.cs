@@ -1,7 +1,7 @@
-﻿using IdentityService.Models;
+﻿using IdentityService.Infrastructure.Entities; // Измени namespace
 using Microsoft.EntityFrameworkCore;
 
-namespace IdentityService.Data
+namespace IdentityService.Infrastructure.Data
 {
     public class IdentityDbContext : DbContext
     {
@@ -9,8 +9,8 @@ namespace IdentityService.Data
         {
         }
         
-        public DbSet<User> Users { get; set; }
-        public DbSet<Photo> Photos { get; set; }
+        public DbSet<User> Users { get; set; } = null!;
+        public DbSet<UserPhoto> UserPhotos { get; set; } = null!;
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
