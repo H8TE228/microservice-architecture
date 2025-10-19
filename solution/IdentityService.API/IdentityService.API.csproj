@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\IdentityService.Application\IdentityService.Application.csproj" />
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
   </ItemGroup>
 
 </Project>
