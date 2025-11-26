@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\PostService.Domain\PostService.Domain.csproj" />
     <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
+      <ProjectReference Include="..\Shared.Messages\Shared.Messages.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

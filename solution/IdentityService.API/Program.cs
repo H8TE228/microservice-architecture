@@ -1,15 +1,19 @@
-using IdentityService.Infrastructure.Data;
-using Microsoft.EntityFrameworkCore;
+using IdentityService.Application.Consumers;
+using IdentityService.Application.DistributedSync;
 using IdentityService.Application.Interfaces.IRepositories;
 using IdentityService.Application.Interfaces.IServices;
+using IdentityService.Application.Sagas;
 using IdentityService.Application.Services;
 using IdentityService.Infrastructure.Data;
 using IdentityService.Infrastructure.Repositories;
-using Microsoft.EntityFrameworkCore;
+using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using System.Text;
 using Microsoft.OpenApi.Models;
+using Shared.Messages;
+using StackExchange.Redis;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,8 +21,60 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddMassTransit(x =>
+{
+    x.AddSagaStateMachine<UserRegistrationStateMachine, UserRegistrationSaga>()
+        .InMemoryRepository();
+    
+    x.AddConsumer<CreateUserProfileConsumer>();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host("localhost", "/", h =>
+        {
+            h.Username("guest");
+            h.Password("guest");
+        });
+        
+        cfg.ReceiveEndpoint("user-registration-saga", e =>
+        {
+            e.ConfigureSaga<UserRegistrationSaga>(context);
+        });
+        
+        cfg.ReceiveEndpoint("create-user-profile-command", e =>
+        {
+            e.ConfigureConsumer<CreateUserProfileConsumer>(context);
+        });
+    });
+});
+
+builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
+{
+    var connectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:";
+    return ConnectionMultiplexer.Connect(connectionString);
+});
+
+builder.Services.AddSingleton<IDatabase>(provider =>
+{
+    var connectionMultiplexer = provider.GetRequiredService<IConnectionMultiplexer>();
+    return connectionMultiplexer.GetDatabase();
+});
+
+builder.Services.AddSingleton<IDistributedSemaphore>(provider =>
+{
+    var database = provider.GetRequiredService<IDatabase>();
+    var semaphoreKey = "MyGlobalSemaphore";
+    var maxCount = 2;
+    var expiryTime = TimeSpan.FromMinutes(10);
+    return new RedisDistributedSemaphore(database, semaphoreKey, maxCount, expiryTime);
+});
+
 builder.Services.AddDbContext<IdentityDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IUserProfileService, UserProfileService>();
 
 var app = builder.Build();
 
@@ -51,9 +107,8 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var jwtSettings = builder.Configuration.GetSection("JwtSettings");
-var key = Encoding.ASCII.GetBytes(jwtSettings["SecretKey"] ?? "super_secret_key_that_is_at_least_32_characters_long_for_security"); 
+var key = Encoding.ASCII.GetBytes(jwtSettings["SecretKey"] ?? "super_secret_key_that_is_at_least_32_characters_long_for_security");
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -83,25 +138,25 @@ app.MapGet("/weatherforecast", () =>
 .WithOpenApi();
 
 builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.RequireHttpsMetadata = false;
+    options.SaveToken = true;
+    options.TokenValidationParameters = new TokenValidationParameters
     {
-        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-    })
-    .AddJwtBearer(options =>
-    {
-        options.RequireHttpsMetadata = false;
-        options.SaveToken = true;
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSettings["Issuer"],
-            ValidAudience = jwtSettings["Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(key)
-        };
-    });
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = jwtSettings["Issuer"],
+        ValidAudience = jwtSettings["Audience"],
+        IssuerSigningKey = new SymmetricSecurityKey(key)
+    };
+});
 
 app.UseHttpsRedirection();
 
