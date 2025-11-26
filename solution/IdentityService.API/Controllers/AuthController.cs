@@ -1,10 +1,11 @@
 ﻿using IdentityService.API.DTOs;
 using IdentityService.Application.Interfaces.IServices;
+using MassTransit;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Shared.Messages;
 using System;
-using System.Security.Claims; // Для ClaimTypes
-using System.Threading.Tasks;
+using System.Security.Claims;
 
 namespace IdentityService.API.Controllers
 {
@@ -13,43 +14,49 @@ namespace IdentityService.API.Controllers
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;
-
-        public AuthController(IAuthService authService)
+        private readonly IPublishEndpoint _publishEndpoint;
+        private readonly IDistributedSemaphore _distributedSemaphore;
+        
+        public AuthController(IAuthService authService, IPublishEndpoint publishEndpoint, IDistributedSemaphore distributedSemaphore)
         {
             _authService = authService;
+            _publishEndpoint = publishEndpoint;
+            _distributedSemaphore = distributedSemaphore;
         }
         
         [HttpPost("register")]
         [AllowAnonymous]
-        [ProducesResponseType(StatusCodes.Status201Created, Type = typeof(AuthResponse))]
+        [ProducesResponseType(StatusCodes.Status202Accepted)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        [ProducesResponseType(StatusCodes.Status409Conflict)]
         public async Task<IActionResult> Register([FromBody] RegisterRequest request)
         {
             if (!ModelState.IsValid)
             {
                 return BadRequest(ModelState);
             }
+            
+            var acquired = await _distributedSemaphore.WaitAsync(TimeSpan.FromSeconds(5));
+
+            if (!acquired)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { Message = "Too many registration requests. Please try again later." });
+            }
 
             try
             {
-                var authResponse = await _authService.RegisterAsync(request);
-
-                if (authResponse == null)
-                {
-                    return Conflict("Email is already registered.");
-                }
+                var correlationId = Guid.NewGuid();
                 
-                return StatusCode(StatusCodes.Status201Created, authResponse);
+                await _publishEndpoint.Publish(new RegisterUserStarted(
+                    correlationId,
+                    request.Email,
+                    request.Name
+                ));
+                
+                return Accepted(new { CorrelationId = correlationId, Message = "Registration process started." });
             }
-            catch (ArgumentException ex)
+            finally
             {
-                return BadRequest(ex.Message);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error during registration: {ex.Message}");
-                return StatusCode(StatusCodes.Status500InternalServerError, "An unexpected error occurred.");
+                _distributedSemaphore.Release();
             }
         }
         
@@ -185,6 +192,7 @@ namespace IdentityService.API.Controllers
             var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (string.IsNullOrEmpty(userIdClaim))
             {
+                throw new UnauthorizedAccessException("User ID claim not found.");
             }
             return Guid.Parse(userIdClaim);
         }
